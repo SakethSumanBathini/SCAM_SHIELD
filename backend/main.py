@@ -34,8 +34,8 @@ import re, random, json, httpx, asyncio, os, time
 # ============================================================================
 class Config:
     HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY", "sk-scamshield-2024-hackathon-key")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAVT_YBP11UyN8sQx6FYNmIBbDqkCIz204")
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
     MAX_MESSAGES = 20
     SESSION_TIMEOUT = 10
