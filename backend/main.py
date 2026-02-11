@@ -27,9 +27,9 @@ import re, random, json, httpx, asyncio, os, time
 # CONFIGURATION
 # ============================================================================
 class Config:
-    HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY", "sk-scamshield-2024-hackathon-key")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
     MAX_MESSAGES = 20
     SESSION_TIMEOUT = 10
@@ -755,7 +755,7 @@ class HoneypotAgent:
     def _build_prompt(self, message, history, analysis, detected_lang, sophistication):
         """FIX #2 #3 #4 #12: LLM selects behavior + matches language + adapts to sophistication"""
         conv = ""
-        for msg in history[-8:]:
+        for msg in history[-4:]:
             role = "Scammer" if msg.get("sender") == "scammer" else "You"
             conv += f"{role}: {msg.get('text', '')}\n"
         
@@ -840,6 +840,27 @@ Scammer: "{message}"
 
 Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no asterisks:"""
 
+    async def _call_groq_fast(self, prompt):
+        """Ultra-fast Groq call with 8b model — prioritize speed"""
+        if not Config.GROQ_API_KEY: return None
+        ph = provider_health["groq"]
+        if ph["fails"] >= 3 and time.time() - ph["last_fail"] < 60: return None
+        t0 = time.time()
+        try:
+            c = get_http_client()
+            r = await c.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 50, "temperature": 0.85, "top_p": 0.9}, timeout=2.0)
+            if r.status_code == 200:
+                txt = self.clean_response(r.json()["choices"][0]["message"]["content"], self.persona["name"])
+                if txt and len(txt) > 5:
+                    ms = int((time.time()-t0)*1000)
+                    ph["status"]="healthy"; ph["fails"]=0; ph["calls"]+=1; ph["total_ms"]+=ms
+                    return txt
+        except: pass
+        return None
+
     async def _call_groq(self, prompt):
         if not Config.GROQ_API_KEY: return None
         ph = provider_health["groq"]
@@ -847,12 +868,13 @@ Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no 
         t0 = time.time()
         try:
             c = get_http_client()
+            # Speed: try primary model only first, backup only if primary fails
             for model in ["llama-3.1-70b-versatile", "llama-3.3-70b-versatile"]:
                 try:
                     r = await c.post("https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
                         json={"model": model, "messages": [{"role": "user", "content": prompt}],
-                              "max_tokens": 100, "temperature": 0.9, "top_p": 0.95}, timeout=3.0)
+                              "max_tokens": 60, "temperature": 0.85, "top_p": 0.9}, timeout=2.5)
                     if r.status_code == 200:
                         txt = self.clean_response(r.json()["choices"][0]["message"]["content"], self.persona["name"])
                         if txt and len(txt) > 5:
@@ -874,7 +896,7 @@ Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no 
             r = await c.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={Config.GEMINI_API_KEY}",
                 json={"contents": [{"parts": [{"text": prompt}]}],
-                      "generationConfig": {"maxOutputTokens": 100, "temperature": 0.9, "topP": 0.95},
+                      "generationConfig": {"maxOutputTokens": 60, "temperature": 0.85, "topP": 0.9},
                       "safetySettings": [{"category": f"HARM_CATEGORY_{c}", "threshold": "BLOCK_NONE"}
                           for c in ["HARASSMENT","HATE_SPEECH","SEXUALLY_EXPLICIT","DANGEROUS_CONTENT"]]},
                 timeout=3.0)
@@ -897,6 +919,7 @@ Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no 
         prev = set(prev_responses or [])
 
         for provider_fn, name in [
+            (lambda: self._call_groq_fast(prompt), "groq"),
             (lambda: self._call_groq(prompt), "groq"),
             (lambda: self._call_gemini(prompt, "gemini-2.0-flash", "gemini_2"), "gemini_2"),
             (lambda: self._call_gemini(prompt, "gemini-1.5-flash", "gemini_1_5"), "gemini_1_5"),
