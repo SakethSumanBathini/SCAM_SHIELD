@@ -1093,6 +1093,15 @@ async def verify_api_key(x_api_key: str = Header(None)):
 async def honeypot(request: HoneypotRequest, bg: BackgroundTasks, api_key: str = Depends(verify_api_key)):
     return await honeypot_full(request, bg)
 
+# GUVI competition endpoint — their tester expects this exact path
+@app.post("/api/scam-honey-pot", response_model=HoneypotResponse)
+async def scam_honey_pot(request: HoneypotRequest, bg: BackgroundTasks, api_key: str = Depends(verify_api_key)):
+    return await honeypot_full(request, bg)
+
+@app.get("/api/scam-honey-pot")
+async def scam_honey_pot_get():
+    return {"status": "active", "service": "SCAM SHIELD Honeypot", "version": Config.VERSION, "method": "POST required for analysis"}
+
 @app.post("/api/honeypot/minimal")
 async def honeypot_minimal(request: HoneypotRequest, bg: BackgroundTasks, api_key: str = Depends(verify_api_key)):
     r = await honeypot_full(request, bg)
