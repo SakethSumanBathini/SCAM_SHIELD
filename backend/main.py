@@ -23,7 +23,7 @@ Features:
 """
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from enum import Enum
@@ -34,8 +34,9 @@ import re, random, json, httpx, asyncio, os, time
 # ============================================================================
 class Config:
     HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY", "sk-scamshield-2024-hackathon-key")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAVT_YBP11UyN8sQx6FYNmIBbDqkCIz204")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
     GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
     MAX_MESSAGES = 20
     SESSION_TIMEOUT = 10
@@ -355,9 +356,26 @@ PERSONAS = {
 # PYDANTIC MODELS
 # ============================================================================
 class Message(BaseModel):
-    sender: str
+    sender: Optional[str] = ""
     text: str = ""
     timestamp: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, values):
+        if isinstance(values, dict):
+            # sender_id → sender
+            if "sender_id" in values and "sender" not in values:
+                values["sender"] = values.pop("sender_id")
+            # content/body → text
+            if "content" in values and "text" not in values:
+                values["text"] = values.pop("content")
+            if "body" in values and "text" not in values:
+                values["text"] = values.pop("body")
+            # from → sender
+            if "from" in values and "sender" not in values:
+                values["sender"] = values.pop("from")
+        return values
 
 class Metadata(BaseModel):
     channel: Optional[str] = "SMS"
@@ -365,10 +383,29 @@ class Metadata(BaseModel):
     locale: Optional[str] = "IN"
 
 class HoneypotRequest(BaseModel):
-    sessionId: str
-    message: Message
-    conversationHistory: Optional[List[Message]] = []  # FIX #1: Will be used!
+    sessionId: str = ""
+    message: Message = Message()
+    conversationHistory: Optional[List[Message]] = []
     metadata: Optional[Metadata] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_request(cls, values):
+        if isinstance(values, dict):
+            # session_id → sessionId
+            if "session_id" in values and "sessionId" not in values:
+                values["sessionId"] = values.pop("session_id")
+            # conversation_history → conversationHistory
+            if "conversation_history" in values and "conversationHistory" not in values:
+                values["conversationHistory"] = values.pop("conversation_history")
+            # If message is a string, convert to Message object
+            if isinstance(values.get("message"), str):
+                values["message"] = {"text": values["message"], "sender": "scammer"}
+            # If no sessionId, generate one
+            if not values.get("sessionId"):
+                import uuid
+                values["sessionId"] = str(uuid.uuid4())[:8]
+        return values
 
 class HoneypotResponse(BaseModel):
     status: str
@@ -388,6 +425,7 @@ scam_networks: Dict[str, set] = {}
 provider_health = {
     "groq": {"status": "unknown", "fails": 0, "last_fail": 0, "calls": 0, "total_ms": 0},
     "gemini_2": {"status": "unknown", "fails": 0, "last_fail": 0, "calls": 0, "total_ms": 0},
+    "openai": {"status": "unknown", "fails": 0, "last_fail": 0, "calls": 0, "total_ms": 0},
     "gemini_1_5": {"status": "unknown", "fails": 0, "last_fail": 0, "calls": 0, "total_ms": 0},
     "rules": {"status": "healthy", "fails": 0, "last_fail": 0, "calls": 0, "total_ms": 0},
 }
@@ -1355,7 +1393,7 @@ Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no 
             r = await c.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
                 json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 50, "temperature": 0.85, "top_p": 0.9}, timeout=2.0)
+                      "max_tokens": 50, "temperature": 0.85, "top_p": 0.9}, timeout=1.5)
             if r.status_code == 200:
                 txt = self.clean_response(r.json()["choices"][0]["message"]["content"], self.persona["name"])
                 if txt and len(txt) > 5:
@@ -1415,6 +1453,27 @@ Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no 
         ph["fails"] += 1; ph["last_fail"] = time.time(); ph["status"] = "degraded"
         return None
 
+    async def _call_openai(self, prompt):
+        if not Config.OPENAI_API_KEY: return None
+        ph = provider_health["openai"]
+        if ph["fails"] >= 3 and time.time() - ph["last_fail"] < 60: return None
+        t0 = time.time()
+        try:
+            c = get_http_client()
+            r = await c.post("https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {Config.OPENAI_API_KEY}", "Content-Type": "application/json"},
+                json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": prompt}],
+                      "max_tokens": 60, "temperature": 0.85, "top_p": 0.9}, timeout=3.0)
+            if r.status_code == 200:
+                txt = self.clean_response(r.json()["choices"][0]["message"]["content"], self.persona["name"])
+                if txt and len(txt) > 5:
+                    ms = int((time.time()-t0)*1000)
+                    ph["status"]="healthy"; ph["fails"]=0; ph["calls"]+=1; ph["total_ms"]+=ms
+                    return txt
+        except: pass
+        ph["fails"] += 1; ph["last_fail"] = time.time(); ph["status"] = "degraded"
+        return None
+
     async def generate_response(self, message, history, analysis, prev_responses=None):
         """Multi-provider chain: Groq → Gemini 2.0 → Gemini 1.5 → Rules"""
         lang = analysis.get("detectedLanguage", "English")
@@ -1426,6 +1485,7 @@ Reply as {p['name']}. In character. Natural. Human. No quotes, no narration, no 
             (lambda: self._call_groq_fast(prompt), "groq"),
             (lambda: self._call_groq(prompt), "groq"),
             (lambda: self._call_gemini(prompt, "gemini-2.0-flash", "gemini_2"), "gemini_2"),
+            (lambda: self._call_openai(prompt), "openai"),
             (lambda: self._call_gemini(prompt, "gemini-1.5-flash", "gemini_1_5"), "gemini_1_5"),
         ]:
             txt = await provider_fn()
@@ -1634,6 +1694,39 @@ async def honeypot_full(request, bg):
         return HoneypotResponse(status="success", reply="Sorry, I didn't receive your message. Can you repeat?",
             analysis={"scamDetected": False, "confidenceScore": 0}, extractedIntelligence={},
             conversationMetrics={"messageCount": 0}, agentState={"responseProvider": "rules"})
+
+# FIX: Handle non-scam messages naturally via LLM
+    quick_check = ScamDetector.analyze(msg_text)
+    if not quick_check["scamDetected"] and quick_check["confidenceScore"] < 0.15:
+        if sid not in sessions_db or not sessions_db[sid].get("scamDetected"):
+            safe_prompt = f"""You received this message from an unknown number: "{msg_text}"
+You are a regular Indian person. This is NOT a scam - just a normal message.
+Reply naturally like a real person who got a message from an unknown number.
+Keep it short (10-20 words). Be friendly but confused about who they are.
+Reply in the same language they used. No quotes, no narration."""
+            
+            # Try LLM for natural response
+            safe_reply = None
+            try:
+                agent = HoneypotAgent(random.choice(list(PERSONAS.keys())))
+                for provider_fn in [
+                    lambda: agent._call_groq_fast(safe_prompt),
+                    lambda: agent._call_openai(safe_prompt),
+                    lambda: agent._call_gemini(safe_prompt, "gemini-2.0-flash", "gemini_2"),
+                ]:
+                    safe_reply = await provider_fn()
+                    if safe_reply and len(safe_reply) > 3:
+                        break
+            except: pass
+            
+            if not safe_reply:
+                safe_reply = "Hello! Who is this? I don't have this number saved."
+            
+            return HoneypotResponse(status="success", 
+                reply=safe_reply,
+                analysis=quick_check, extractedIntelligence={},
+                conversationMetrics={"messageCount": 1, "sessionDuration": int((time.time()-t0)*1000)},
+                agentState={"responseProvider": "safe_response", "persona": "default"})
 
     # Session cleanup
     cleanup_sessions()
