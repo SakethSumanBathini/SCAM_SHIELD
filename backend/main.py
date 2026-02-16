@@ -390,16 +390,11 @@ class Metadata(BaseModel):
     language: Optional[str] = "English"
     locale: Optional[str] = "IN"
 
-class HoneypotResponse(BaseModel):
-    status: str
-    reply: str
-    scamDetected: Optional[bool] = None
-    analysis: Optional[Dict[str, Any]] = None
-    extractedIntelligence: Optional[Dict[str, Any]] = None
-    conversationMetrics: Optional[Dict[str, Any]] = None
-    engagementMetrics: Optional[Dict[str, Any]] = None
-    agentNotes: Optional[str] = None
-    agentState: Optional[Dict[str, Any]] = None
+class HoneypotRequest(BaseModel):
+    sessionId: str = ""
+    message: Message = Message()
+    conversationHistory: Optional[List[Message]] = []
+    metadata: Optional[Metadata] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -423,9 +418,12 @@ class HoneypotResponse(BaseModel):
 class HoneypotResponse(BaseModel):
     status: str
     reply: str
+    scamDetected: Optional[bool] = None
     analysis: Optional[Dict[str, Any]] = None
     extractedIntelligence: Optional[Dict[str, Any]] = None
     conversationMetrics: Optional[Dict[str, Any]] = None
+    engagementMetrics: Optional[Dict[str, Any]] = None
+    agentNotes: Optional[str] = None
     agentState: Optional[Dict[str, Any]] = None
 
 # ============================================================================
@@ -500,7 +498,14 @@ class IntelligenceExtractor:
         result = []
         for x in m:
             domain = x.split('@')[-1].lower()
-            if '.' not in domain and domain not in email_domains:
+            # UPI handles: no dots, not email domain, at least 3 chars handle
+            if '.' not in domain and domain not in email_domains and len(domain) >= 3:
+                # Make sure this isn't a partial match of an email (check if original text has .com/.in after)
+                idx = t.lower().find(x)
+                if idx >= 0:
+                    after = t[idx+len(x):idx+len(x)+10]
+                    if after.startswith('-') or after.startswith('.'):
+                        continue  # This is part of an email like offers@fake-amazon.com
                 result.append(x)
         return result
     @classmethod
@@ -589,7 +594,7 @@ class IntelligenceExtractor:
         return results
     @classmethod
     def extract_emails(cls, t):
-        return [e for e in cls._email.findall(t.lower()) if e.split('@')[-1] not in cls._upi_sfx and '.' in e.split('@')[-1]]
+        return [e for e in cls._email.findall(t.lower()) if '.' in e.split('@')[-1]]
     @classmethod
     def extract_aadhaar(cls, t):
         return [re.sub(r'[-\s]','',m) for m in cls._aadhaar.findall(t) if len(re.sub(r'[-\s]','',m))==12]
