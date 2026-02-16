@@ -471,7 +471,7 @@ def cleanup_sessions():
 class IntelligenceExtractor:
     _ph = [re.compile(p) for p in [r'\+91[-\s]?[6-9]\d{9}', r'(?<!\d)[6-9]\d{9}(?!\d)', r'\+91[-\s]?\d{5}[-\s]?\d{5}', r'1800[-\s]?\d{3}[-\s]?\d{4}']]
     _upi = re.compile(r'[a-zA-Z0-9._-]+@[a-zA-Z]+', re.I)
-    _upi_sfx = {'upi','ybl','paytm','okaxis','okhdfcbank','oksbi','okicici','apl','axisbank','ibl','sbi','hdfcbank','icici','kotak','indus','pnb','boi','canara','bob','freecharge','mobikwik','jio','airtel'}
+    _upi_sfx = None  # Accept all UPI-like patterns generically
     _acc = re.compile(r'\b\d{9,18}\b')
     _ifsc = re.compile(r'\b[A-Z]{4}0[A-Z0-9]{6}\b', re.I)
     _link = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
@@ -496,7 +496,13 @@ class IntelligenceExtractor:
     @classmethod
     def extract_upi(cls, t):
         m = cls._upi.findall(t.lower())
-        return [x for x in m if x.split('@')[-1] in cls._upi_sfx]
+        email_domains = {'gmail', 'yahoo', 'hotmail', 'outlook', 'protonmail', 'icloud', 'aol', 'mail', 'zoho', 'yandex', 'rediffmail', 'live', 'msn', 'rocketmail'}
+        result = []
+        for x in m:
+            domain = x.split('@')[-1].lower()
+            if '.' not in domain and domain not in email_domains:
+                result.append(x)
+        return result
     @classmethod
     def extract_accounts(cls, t):
         return [m for m in cls._acc.findall(t) if 9 <= len(m) <= 18 and not m.startswith(('91','17','19'))]
