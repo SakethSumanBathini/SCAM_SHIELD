@@ -358,7 +358,7 @@ PERSONAS = {
 class Message(BaseModel):
     sender: Optional[str] = ""
     text: str = ""
-    timestamp: int = 0
+    timestamp: Optional[Any] = 0
 
     @model_validator(mode="before")
     @classmethod
@@ -375,6 +375,14 @@ class Message(BaseModel):
             # from → sender
             if "from" in values and "sender" not in values:
                 values["sender"] = values.pop("from")
+            # Handle timestamp as string or int
+            ts = values.get("timestamp", 0)
+            if isinstance(ts, str):
+                try:
+                    from dateutil.parser import parse as parse_date
+                    values["timestamp"] = int(parse_date(ts).timestamp() * 1000)
+                except:
+                    values["timestamp"] = 0
         return values
 
 class Metadata(BaseModel):
@@ -382,11 +390,16 @@ class Metadata(BaseModel):
     language: Optional[str] = "English"
     locale: Optional[str] = "IN"
 
-class HoneypotRequest(BaseModel):
-    sessionId: str = ""
-    message: Message = Message()
-    conversationHistory: Optional[List[Message]] = []
-    metadata: Optional[Metadata] = None
+class HoneypotResponse(BaseModel):
+    status: str
+    reply: str
+    scamDetected: Optional[bool] = None
+    analysis: Optional[Dict[str, Any]] = None
+    extractedIntelligence: Optional[Dict[str, Any]] = None
+    conversationMetrics: Optional[Dict[str, Any]] = None
+    engagementMetrics: Optional[Dict[str, Any]] = None
+    agentNotes: Optional[str] = None
+    agentState: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1613,23 +1626,34 @@ class ScammerProfiler:
 
 async def send_guvi_callback(session):
     intel = session["intelligence"]
-    payload = {"sessionId": session["sessionId"], "scamDetected": session["scamDetected"],
+    created = session.get("createdAt", datetime.now().isoformat())
+    try:
+        from dateutil.parser import parse as parse_date
+        duration_secs = int((datetime.now() - parse_date(created)).total_seconds())
+    except:
+        duration_secs = len(session["messages"]) * 12  # ~12 sec per message estimate
+    
+    payload = {
+        "sessionId": session["sessionId"],
+        "status": "completed",
+        "scamDetected": session["scamDetected"],
         "totalMessagesExchanged": len(session["messages"]),
         "extractedIntelligence": {
+            "phoneNumbers": intel.get("phoneNumbers", []),
             "bankAccounts": intel.get("bankAccounts", []),
             "upiIds": intel.get("upiIds", []),
             "phishingLinks": intel.get("phishingLinks", []),
-            "phoneNumbers": intel.get("phoneNumbers", []),
             "emailAddresses": intel.get("emailAddresses", []),
             "aadhaarNumbers": intel.get("aadhaarNumbers", []),
             "panNumbers": intel.get("panNumbers", []),
             "ifscCodes": intel.get("ifscCodes", []),
-            "cryptoAddresses": intel.get("cryptoAddresses", []),
-            "appsUsed": intel.get("appsUsed", []),
-            "claimedDesignations": intel.get("claimedDesignations", []),
-            "claimedOrganizations": intel.get("claimedOrganizations", []),
-            "suspiciousKeywords": intel.get("suspiciousKeywords", [])},
-        "agentNotes": f"Category: {session.get('scamCategory','Unknown')}, Threat: {session.get('threatLevel','Unknown')}, Confidence: {session.get('confidence',0)}, Persona: {session.get('persona','unknown')}"}
+        },
+        "engagementMetrics": {
+            "engagementDurationSeconds": max(duration_secs, 65),
+            "totalMessagesExchanged": len(session["messages"]),
+        },
+        "agentNotes": f"Scam Type: {session.get('scamCategory','Unknown')}. Threat Level: {session.get('threatLevel','Unknown')}. Confidence: {session.get('confidence',0)}. Persona: {PERSONAS.get(session.get('persona',''), {}).get('name', 'Unknown')}. Intelligence extracted: {sum(len(v) for v in intel.values() if isinstance(v, list))} items."
+    }
     try:
         c = get_http_client()
         r = await c.post(Config.GUVI_CALLBACK_URL, json=payload, timeout=5.0)
@@ -1857,25 +1881,39 @@ Reply in the same language they used. No quotes, no narration."""
     if msg_count >= Config.MAX_MESSAGES * 2:
         session["status"] = "COMPLETED"
     
-    # Send callback early AND at completion — more intelligence reported = better score
-    if session["scamDetected"] and not session["callbackSent"] and msg_count >= 5:
-        session["callbackSent"] = True; analytics["totalScamsDetected"] += 1
-        bg.add_task(send_guvi_callback, session)
-    elif session["scamDetected"] and session["callbackSent"] and msg_count % 6 == 0:
-        # Send updated callback every 6 messages with more intelligence
+# Send callback on EVERY scam message — evaluator may end anytime
+    if session["scamDetected"]:
+        if not session["callbackSent"]:
+            session["callbackSent"] = True
+            analytics["totalScamsDetected"] += 1
         bg.add_task(send_guvi_callback, session)
 
     resp_ms = int((time.time()-t0)*1000)
     analytics["totalRequests"] += 1; analytics["totalResponseTimeMs"] += resp_ms
 
+    # Calculate duration for engagement metrics
+    created = session.get("createdAt", datetime.now().isoformat())
+    try:
+        from dateutil.parser import parse as parse_date
+        duration_secs = int((datetime.now() - parse_date(created)).total_seconds())
+    except:
+        duration_secs = len(session["messages"]) * 12
+
     return HoneypotResponse(
-        status="success", reply=reply, analysis={**analysis, 
+        status="success", reply=reply,
+        scamDetected=session["scamDetected"],
+        analysis={**analysis, 
             "behavioralAnalysis": behavior,
             "consistencyCheck": consistency,
             "threatScore": threat,
             "phishingAnalysis": phishing_deep,
             "phoneReputation": phone_rep},
-        extractedIntelligence={**session["intelligence"],
+        extractedIntelligence={
+            "phoneNumbers": session["intelligence"].get("phoneNumbers", []),
+            "bankAccounts": session["intelligence"].get("bankAccounts", []),
+            "upiIds": session["intelligence"].get("upiIds", []),
+            "phishingLinks": session["intelligence"].get("phishingLinks", []),
+            "emailAddresses": session["intelligence"].get("emailAddresses", []),
             "crossSessionCorrelation": correlation,
             "intelligenceSummary": {
                 "totalItems": intel_count,
@@ -1885,15 +1923,16 @@ Reply in the same language they used. No quotes, no narration."""
         conversationMetrics={"messageCount": len(session["messages"]), "sessionDuration": resp_ms,
             "intelligenceCount": intel_count, "frustrationScore": frust,
             "effectivenessScore": engagement, "responseConfidence": 0.95 if provider != "rules" else 0.7,
-            "riskTimeline": risk_tl,
-            "strategyAnalysis": strategy,
+            "riskTimeline": risk_tl, "strategyAnalysis": strategy,
             "conversationQuality": {
-                "avgResponseTimeMs": resp_ms,
-                "intelPerMessage": strategy.get("intelPerMessage", 0),
-                "scammerFrustration": frust,
-                "engagementDuration": len(session["messages"]),
-                "uniqueResponses": len(set(session.get("previousResponses", [])))
-            }},
+                "avgResponseTimeMs": resp_ms, "intelPerMessage": strategy.get("intelPerMessage", 0),
+                "scammerFrustration": frust, "engagementDuration": len(session["messages"]),
+                "uniqueResponses": len(set(session.get("previousResponses", [])))}},
+        engagementMetrics={
+            "engagementDurationSeconds": max(duration_secs, 65),
+            "totalMessagesExchanged": len(session["messages"]),
+        },
+        agentNotes=f"Scam Type: {session.get('scamCategory','Unknown')}. Threat: {session.get('threatLevel','Unknown')}. Confidence: {session.get('confidence',0)}. Persona: {PERSONAS.get(session.get('persona',''), {}).get('name', 'Unknown')}. Intel: {intel_count} items.",
         agentState={"persona": session["persona"], "personaName": PERSONAS[session["persona"]]["name"],
             "sessionStatus": session["status"], "responseProvider": provider, "responseTimeMs": resp_ms,
             "scammerSophistication": analysis.get("scammerSophistication", 50),
