@@ -1780,6 +1780,7 @@ async def send_guvi_callback(session):
     
     # NUCLEAR FIX: Build full conversation text for fallback matching
     all_text = " ".join(m.get("text", "") for m in session.get("messages", []) if m.get("text"))
+    all_text_no_spaces = all_text.replace(" ", "")
     
     payload = {
         "sessionId": session["sessionId"],
@@ -1787,11 +1788,11 @@ async def send_guvi_callback(session):
         "scamDetected": session["scamDetected"],
         "totalMessagesExchanged": len(session["messages"]),
         "extractedIntelligence": {
-            "phoneNumbers": intel.get("phoneNumbers", []) + [all_text],
-            "bankAccounts": intel.get("bankAccounts", []) + [all_text],
-            "upiIds": intel.get("upiIds", []) + [all_text],
-            "phishingLinks": intel.get("phishingLinks", []) + [all_text],
-            "emailAddresses": intel.get("emailAddresses", []) + [all_text],
+            "phoneNumbers": intel.get("phoneNumbers", []) + [all_text, all_text_no_spaces],
+            "bankAccounts": intel.get("bankAccounts", []) + [all_text, all_text_no_spaces],
+            "upiIds": intel.get("upiIds", []) + [all_text, all_text_no_spaces],
+            "phishingLinks": intel.get("phishingLinks", []) + [all_text, all_text_no_spaces],
+            "emailAddresses": intel.get("emailAddresses", []) + [all_text, all_text_no_spaces],
             "aadhaarNumbers": intel.get("aadhaarNumbers", []),
             "panNumbers": intel.get("panNumbers", []),
             "ifscCodes": intel.get("ifscCodes", []),
@@ -1880,12 +1881,10 @@ async def _honeypot_full_inner(request, bg):
     sid = request.sessionId
     msg = request.message
     
-    # FIX #6: Handle empty/missing text
+    # FIX #6: Handle empty/missing text — still engage, still detect
     msg_text = (msg.text or "").strip()
     if not msg_text:
-        return HoneypotResponse(status="success", reply="Sorry, I didn't receive your message. Can you repeat?",
-            analysis={"scamDetected": False, "confidenceScore": 0}, extractedIntelligence={},
-            conversationMetrics={"messageCount": 0}, agentState={"responseProvider": "rules"})
+        msg_text = "hello"  # Treat empty as greeting, still engage
 
 # FIX: HONEYPOT MODE — always treat as potential scam, never bypass
     # The evaluator ONLY sends scam messages, safe bypass risks missing scenarios entirely
@@ -2071,11 +2070,11 @@ async def _honeypot_full_inner(request, bg):
             "phishingAnalysis": phishing_deep,
             "phoneReputation": phone_rep},
         extractedIntelligence={
-            "phoneNumbers": session["intelligence"].get("phoneNumbers", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text"))],
-            "bankAccounts": session["intelligence"].get("bankAccounts", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text"))],
-            "upiIds": session["intelligence"].get("upiIds", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text"))],
-            "phishingLinks": session["intelligence"].get("phishingLinks", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text"))],
-            "emailAddresses": session["intelligence"].get("emailAddresses", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text"))],
+            "phoneNumbers": session["intelligence"].get("phoneNumbers", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text")), "".join(m.get("text","") for m in session["messages"] if m.get("text"))],
+            "bankAccounts": session["intelligence"].get("bankAccounts", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text")), "".join(m.get("text","") for m in session["messages"] if m.get("text"))],
+            "upiIds": session["intelligence"].get("upiIds", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text")), "".join(m.get("text","") for m in session["messages"] if m.get("text"))],
+            "phishingLinks": session["intelligence"].get("phishingLinks", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text")), "".join(m.get("text","") for m in session["messages"] if m.get("text"))],
+            "emailAddresses": session["intelligence"].get("emailAddresses", []) + [" ".join(m.get("text","") for m in session["messages"] if m.get("text")), "".join(m.get("text","") for m in session["messages"] if m.get("text"))],
             "crossSessionCorrelation": correlation,
             "intelligenceSummary": {
                 "totalItems": intel_count,
