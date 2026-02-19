@@ -1,4 +1,30 @@
-echo ".env" >> .gitignore
-echo "*.pyc" >> .gitignore
-echo "__pycache__/" >> .gitignore
-git add .gitignore
+# Environment variables (API KEYS)
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (frontend)
+node_modules/
+.next/
+out/
