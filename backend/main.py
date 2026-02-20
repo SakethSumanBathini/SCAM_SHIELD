@@ -141,7 +141,7 @@ SCAM_KEYWORDS = {
     ]
 }
 
-KNOWN_SCAM_PHONES = {"9876543210", "8888777766", "9999888877", "7777666655", "1800123456"}
+KNOWN_SCAM_PHONES = set()  # Populated dynamically from extracted intelligence
 
 RISK_WEIGHTS = {
     "urgency": 15, "threat": 25, "credential_request": 30, "money_request": 25,
